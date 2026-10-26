@@ -875,9 +875,10 @@ impl Fitter {
             );
         }
         let _ = writeln!(s, "#[rustfmt::skip]");
+        // The name is the caller's choice, so it need not be upper case.
         let _ = writeln!(
             s,
-            "#[allow(clippy::unreadable_literal, clippy::approx_constant)]"
+            "#[allow(non_upper_case_globals, clippy::unreadable_literal, clippy::approx_constant)]"
         );
         let _ = writeln!(
             s,
@@ -1688,5 +1689,8 @@ mod tests {
         for good in ["F", "_F", "MY_FN_2", "lower"] {
             assert!(fit.to_rust_code(good).is_ok(), "{good:?}");
         }
+        // A name that is not upper case must not make the generated code warn.
+        let code = fit.to_rust_code("lower").unwrap();
+        assert!(code.contains("#[allow(non_upper_case_globals, "), "{code}");
     }
 }

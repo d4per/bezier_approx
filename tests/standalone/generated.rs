@@ -5,7 +5,7 @@
 /// Stores 9 coefficients (72 bytes).
 /// Largest difference from the fitted model at 1000 test inputs: 8.9e-16.
 #[rustfmt::skip]
-#[allow(clippy::unreadable_literal, clippy::approx_constant)]
+#[allow(non_snake_case, clippy::unreadable_literal, clippy::approx_constant)]
 pub fn surface(x: [f64; 2]) -> f64 {
     // Map each input from the box to [-1, 1].
     let u0 = ((x[0] - 0.5) * 2.0).clamp(-1.0, 1.0);
@@ -24,7 +24,7 @@ pub fn surface(x: [f64; 2]) -> f64 {
 /// Stores 16 coefficients (128 bytes).
 /// Largest difference from the fitted model at 1000 test inputs: 2.2e-16.
 #[rustfmt::skip]
-#[allow(clippy::unreadable_literal, clippy::approx_constant)]
+#[allow(non_snake_case, clippy::unreadable_literal, clippy::approx_constant)]
 pub fn curve(x: [f64; 1]) -> f64 {
     // One row per piece: its polynomial in u0, constant term first.
     static C: [[f64; 4]; 4] = [
@@ -48,7 +48,7 @@ pub fn curve(x: [f64; 1]) -> f64 {
 /// Stores 16 coefficients (128 bytes).
 /// Largest difference from the fitted model at 1000 test inputs: 4.4e-16.
 #[rustfmt::skip]
-#[allow(clippy::unreadable_literal, clippy::approx_constant)]
+#[allow(non_snake_case, clippy::unreadable_literal, clippy::approx_constant)]
 pub fn ramp(x: [f64; 2]) -> f64 {
     // One row per piece: its polynomial in u0, u1, the power of u0 varying fastest.
     static C: [[f64; 4]; 4] = [

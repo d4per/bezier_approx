@@ -10,6 +10,10 @@ keywords = ["bezier", "spline", "approximation", "curve-fitting", "no-std"]
 categories = ["mathematics", "science", "embedded", "no-std::no-alloc"]
 repository = "https://github.com/d4per/bezier_approx"
 
+[package.metadata.docs.rs]
+# Mark the items that need `std` in the docs (see `doc_cfg` in src/lib.rs).
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 default = ["std"]
 # Training (`Fitter`, `AutoFit`). Without it, only the allocation-free evaluator is built.

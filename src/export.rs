@@ -48,9 +48,10 @@ pub(crate) fn standalone(fit: &Fitter, name: &str, lang: Lang) -> Result<String,
             let _ = writeln!(s, "/// {line}");
         }
         let _ = writeln!(s, "#[rustfmt::skip]");
+        // The name is the caller's choice, so it need not be snake case.
         let _ = writeln!(
             s,
-            "#[allow(clippy::unreadable_literal, clippy::approx_constant)]"
+            "#[allow(non_snake_case, clippy::unreadable_literal, clippy::approx_constant)]"
         );
         let _ = writeln!(s, "pub fn {name}(x: [f64; {dims}]) -> f64 {{");
     } else {
@@ -185,7 +186,7 @@ fn header(fit: &Fitter, pf: &PowerForm, lang: Lang, deviation: f64) -> Vec<Strin
     let rust = lang == Lang::Rust;
     let mut head = Vec::new();
     let boxes: Vec<String> = (0..dims)
-        .map(|d| format!("[{}, {}]", pf.lo[d], pf.hi[d]))
+        .map(|d| format!("[{}, {}]", short(pf.lo[d]), short(pf.hi[d])))
         .collect();
     let (desc, times) = if rust {
         (model.to_string(), " × ")
@@ -259,7 +260,7 @@ fn write_table(s: &mut String, pf: &PowerForm, lang: Lang) {
                 let seg = piece / k.pow(d as u32) % k;
                 let w = pf.hi[d] - pf.lo[d];
                 let at = |j: usize| pf.lo[d] + w * j as f64 / k as f64;
-                format!("x{d} in [{}, {}]", at(seg), at(seg + 1))
+                format!("x{d} in [{}, {}]", short(at(seg)), short(at(seg + 1)))
             })
             .collect();
         let label = if rust {
@@ -287,6 +288,15 @@ fn write_table(s: &mut String, pf: &PowerForm, lang: Lang) {
 /// Shortest representation that reads back as the same `f64`; valid in Rust and C.
 fn lit(v: f64) -> String {
     format!("{v:?}")
+}
+
+/// A bound in a comment: like [`lit`] (`1e-300`, not 300 digits), without a trailing `.0`.
+fn short(v: f64) -> String {
+    let s = lit(v);
+    match s.strip_suffix(".0") {
+        Some(t) => t.to_string(),
+        None => s,
+    }
 }
 
 /// Name for the power of `u_axis` in comments: j, k, l, … for axes 1, 2, 3, …
@@ -774,7 +784,7 @@ mod tests {
         let body = |code: &str| shape(code.split_once("#[allow").map_or(code, |(_, b)| b));
         assert_eq!(
             body(&fit.to_rust_fn("surface").unwrap()),
-            "(clippy::unreadable_literal, clippy::approx_constant)]
+            "(non_snake_case, clippy::unreadable_literal, clippy::approx_constant)]
 pub fn surface(x: [f64; 2]) -> f64 {
     // Map each input from the box to [-1, 1].
     let u0 = ((x[0] - #) * #).clamp(#, #);
@@ -933,7 +943,20 @@ pub fn surface(x: [f64; 2]) -> f64 {
             );
         }
         assert!(fit.to_rust_fn("double").is_ok());
+        // A name that is not snake case must not make the generated code warn.
+        let code = fit.to_rust_fn("UPPER").unwrap();
+        assert!(code.contains("#[allow(non_snake_case, "), "{code}");
         assert_eq!(Fitter::unit(1, 2).to_c_fn("f"), Err(FitError::NotSolved));
+    }
+
+    #[test]
+    fn comments_print_extreme_bounds_briefly() {
+        let fit = trained(Model::spline(1, 2), &[1e-300, -1e20], &[2e-300, 1e20]);
+        for code in [fit.to_rust_fn("f").unwrap(), fit.to_c_fn("f").unwrap()] {
+            assert!(code.contains("on [1e-300, 2e-300]"), "{code}");
+            assert!(code.contains("x1 in [-1e20, 0]"), "{code}");
+            assert!(code.lines().all(|l| l.len() < 200), "{code}");
+        }
     }
 
     #[test]
