@@ -84,5 +84,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run(&data)?;
     println!("{report}");
     println!("Exported:\n{}", report.fitter.to_rust_code("SQRT_LOG")?);
+    println!("As plain C:\n{}", report.fitter.to_c_fn("sqrt_log")?);
     Ok(())
 }

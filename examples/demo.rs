@@ -124,5 +124,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     print!("{}", fit1.to_rust_code("EXP_COS")?);
     print!("{}", fit2.to_rust_code("SURFACE")?);
     print!("{}", fit3.to_rust_code("BEND")?);
+
+    println!("\n// ---- the same functions as standalone Rust (no crate needed) ----");
+    print!("{}", fit1.to_rust_fn("exp_cos")?);
+    print!("{}", fit2.to_rust_fn("surface")?);
+    print!("{}", fit3.to_rust_fn("bend")?);
+
+    println!("\n/* ---- and as standalone C ---- */");
+    print!("{}", fit1.to_c_fn("exp_cos")?);
+    print!("{}", fit2.to_c_fn("surface")?);
+    print!("{}", fit3.to_c_fn("bend")?);
     Ok(())
 }

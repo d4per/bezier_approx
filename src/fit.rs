@@ -130,10 +130,82 @@ impl Model {
     pub fn terms(&self, dims: usize) -> usize {
         saturating_pow(self.degree + 1, dims)
     }
+
+    /// Work per call, and storage, of the standalone code that
+    /// [`Fitter::to_rust_fn`] and [`Fitter::to_c_fn`] generate for this model in
+    /// `dims` dimensions. Saturates at `usize::MAX` instead of overflowing.
+    pub fn cost(&self, dims: usize) -> Cost {
+        let terms = self.terms(dims);
+        let horner = terms - 1;
+        // Per axis: map x to the box (sub, mul) and clamp (2 cmp); splines also pick
+        // the piece (1 cmp) and, unless constant, centre x within it (2 add, 1 mul).
+        let (add, mul, cmp): (usize, usize, usize) = match (self.segments, self.degree) {
+            (1, 0) => (0, 0, 0),
+            (1, _) => (1, 1, 2),
+            (_, 0) => (1, 1, 3),
+            _ => (3, 2, 3),
+        };
+        Cost {
+            mul: horner.saturating_add(mul.saturating_mul(dims)),
+            add: horner.saturating_add(add.saturating_mul(dims)),
+            cmp: cmp.saturating_mul(dims),
+            values: saturating_pow(self.segments, dims).saturating_mul(terms),
+        }
+    }
 }
 
 fn saturating_pow(base: usize, exp: usize) -> usize {
     u32::try_from(exp).map_or(usize::MAX, |e| base.saturating_pow(e))
+}
+
+/// Work per call, and storage, of the standalone code from [`Fitter::to_rust_fn`]
+/// and [`Fitter::to_c_fn`]; see [`Model::cost`].
+///
+/// The polynomial is evaluated by Horner's scheme, one axis at a time:
+/// `(degree + 1)^dims − 1` multiply-add pairs, whatever the number of segments. Each
+/// input coordinate adds a few operations to map it into the box (and, for splines,
+/// to pick the piece). There are no divisions, square roots or loops; splines add one
+/// float-to-integer conversion per axis and a table lookup.
+///
+/// [`BezierFn::eval`](crate::BezierFn::eval) sums the same number of terms, but also
+/// evaluates the basis functions with the Cox–de Boor recurrence, which divides, so
+/// it is slower than the standalone code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct Cost {
+    /// Floating-point multiplications.
+    pub mul: usize,
+    /// Floating-point additions and subtractions.
+    pub add: usize,
+    /// Comparisons, for clamping inputs to the box and picking the spline piece.
+    pub cmp: usize,
+    /// Coefficients stored in the code, `(segments · (degree + 1))^dims`. For a spline
+    /// this is more than its control values, because every piece is stored as its
+    /// own polynomial.
+    pub values: usize,
+}
+
+impl Cost {
+    /// Floating-point operations, `mul + add`.
+    pub fn flops(&self) -> usize {
+        self.mul.saturating_add(self.add)
+    }
+}
+
+impl fmt::Display for Cost {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let n = |count: usize, what: &str| match count {
+            1 => format!("1 {what}"),
+            _ => format!("{count} {what}s"),
+        };
+        write!(
+            f,
+            "{}, {}, {}",
+            n(self.mul, "multiplication"),
+            n(self.add, "addition"),
+            n(self.cmp, "comparison")
+        )
+    }
 }
 
 impl fmt::Display for Model {
@@ -803,7 +875,10 @@ impl Fitter {
             );
         }
         let _ = writeln!(s, "#[rustfmt::skip]");
-        let _ = writeln!(s, "#[allow(clippy::unreadable_literal)]");
+        let _ = writeln!(
+            s,
+            "#[allow(clippy::unreadable_literal, clippy::approx_constant)]"
+        );
         let _ = writeln!(
             s,
             "pub const {name}: bezier_approx::BezierFn<'static, {}, {p1}> = bezier_approx::BezierFn::new(",
@@ -839,6 +914,38 @@ impl Fitter {
         let _ = writeln!(s, "    ],");
         let _ = writeln!(s, ");");
         Ok(s)
+    }
+
+    /// Emits a standalone Rust function `pub fn name(x: [f64; D]) -> f64` that
+    /// computes the fitted function with plain arithmetic: no crate, no allocation,
+    /// `no_std`-compatible. Like [`BezierFn::eval`](crate::BezierFn::eval), it clamps
+    /// inputs to the box.
+    ///
+    /// The function is written as polynomials in power form, evaluated by Horner's
+    /// scheme. Each input is first mapped to `u ∈ [-1, 1]` across the box (or, for
+    /// a spline, across its piece), because powers of a centred variable stay well
+    /// conditioned, whereas a degree-15 polynomial in `x ∈ [0, 1]` itself can lose half
+    /// its digits to cancellation. A single Bézier polynomial is written out with its
+    /// coefficients inline; a spline stores each piece's coefficients in a table and
+    /// picks the row for the piece `x` falls in. [`Model::cost`] gives the operation
+    /// count and table size, which also appear in a comment above the function, with
+    /// the largest difference from [`predict`](Fitter::predict) at 1000 test inputs.
+    ///
+    /// Fails with [`FitError::InvalidName`] unless `name` is an ASCII identifier that
+    /// is not a keyword.
+    pub fn to_rust_fn(&self, name: &str) -> Result<String, FitError> {
+        crate::export::standalone(self, name, crate::export::Lang::Rust)
+    }
+
+    /// Emits a standalone C99 function `double name(const double x[D])`, the C
+    /// counterpart of [`to_rust_fn`](Fitter::to_rust_fn). It needs no headers or
+    /// libraries, and does not convert NaN to an integer (which would be undefined
+    /// behaviour): NaN inputs give NaN, as in Rust.
+    ///
+    /// Fails with [`FitError::InvalidName`] unless `name` is an ASCII C identifier that
+    /// is not a keyword.
+    pub fn to_c_fn(&self, name: &str) -> Result<String, FitError> {
+        crate::export::standalone(self, name, crate::export::Lang::C)
     }
 
     /// Mean sample weight. Residuals, noise estimates and support are expressed for a
@@ -978,7 +1085,7 @@ pub(crate) fn assert_valid_box(lo: &[f64], hi: &[f64]) {
 
 /// Whether `name` can name the exported constant: an ASCII identifier other than
 /// `_` or a keyword (strict or reserved, in any edition).
-fn is_identifier(name: &str) -> bool {
+pub(crate) fn is_identifier(name: &str) -> bool {
     const KEYWORDS: &[&str] = &[
         "Self", "abstract", "as", "async", "await", "become", "box", "break", "const", "continue",
         "crate", "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if",

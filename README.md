@@ -32,9 +32,10 @@ println!("{}", report.fitter.to_rust_code("MY_FN")?);
 with 2–32 segments per axis. It scores each by 5-fold cross-validation: every sample
 is predicted by a model that never saw it. It recommends the smallest model whose
 error is within one standard error of the best, so larger models only win when they
-are clearly better. Its summary explains the choice and lists caveats such as too few
-samples per coefficient, outliers found (and handled by default), regions with no
-data, errors concentrated in one place, or the best model sitting at a search limit.
+are clearly better. Its summary gives each model's cost per call, explains the
+choice, and lists caveats such as too few samples per coefficient, outliers found (and
+handled by default), regions with no data, errors concentrated in one place, or the
+best model sitting at a search limit.
 
 For exact data from a formula, error keeps falling with model size. Use
 `.smoothing(0.0).target_rms(1e-4)` to get the smallest model that is accurate enough.
@@ -74,6 +75,65 @@ constant is compiled, so a table that does not match it is a compile error.
 
 Each evaluation combines `(degree + 1)^D` coefficients, whatever the number of
 segments. Splines are cheap to evaluate, and only the stored table grows.
+
+## Standalone Rust or C, no crate needed
+
+`to_rust_fn` and `to_c_fn` write the fitted function as plain code that needs neither
+this crate nor an allocator:
+
+```rust
+println!("{}", fit.to_rust_fn("surface")?);     // pub fn surface(x: [f64; 2]) -> f64
+println!("{}", fit.to_c_fn("surface")?);        // double surface(const double x[2])
+```
+
+For a 2-D Bézier polynomial of degree 4 the Rust version is (comment lines shortened):
+
+```rust
+/// Per call: 26 multiplications, 26 additions, 4 comparisons; no divisions or loops.
+/// Largest difference from the fitted model at 1000 test inputs: 5.6e-16.
+pub fn surface(x: [f64; 2]) -> f64 {
+    let u0 = ((x[0] - 0.5) * 2.0).clamp(-1.0, 1.0);
+    let u1 = ((x[1] - 0.5) * 2.0).clamp(-1.0, 1.0);
+    let p1_0 = 0.6891269866986657 + u0 * (0.4687918883577295 + u0 * (-0.2974922358580125 + u0 * (-0.0620350874507979 + u0 * 0.013389379168169867)));
+    // ... p1_1 to p1_4 likewise ...
+    p1_0 + u1 * (p1_1 + u1 * (p1_2 + u1 * (p1_3 + u1 * p1_4)))
+}
+```
+
+The polynomial is written in powers of `u`, each input mapped to `[-1, 1]` across the
+box, and evaluated by Horner's scheme. Powers of the raw inputs (`0.23*a + 0.43*b +
+0.23*a*b - …`) would be shorter, but they cancel badly: at degree 15, half the digits
+are lost, while the centred form stays within about 1e-14 of the fitted model. The
+comment above each function states the largest difference found.
+
+A spline becomes a table with one row of coefficients per piece; the function picks
+the row for the piece `x` falls in and maps `x` to `[-1, 1]` within that piece. The C
+version is C99 and needs no headers or libraries. Both clamp inputs to the box like
+`BezierFn`, and both return NaN for NaN inputs.
+
+### Cost per call
+
+`Model::cost(dims)` gives the exact operation count and table size of the generated
+code. They also appear in the comment above the function and in the `AutoFit` summary.
+The polynomial takes `(degree + 1)^D − 1` multiply-add pairs, and each input adds a few
+operations for mapping it into the box and, for splines, picking the piece:
+
+| model                        | D | mul | add | cmp | stored values | `BezierFn` coeffs |
+|------------------------------|---|----:|----:|----:|--------------:|------------------:|
+| Bézier, degree 6             | 1 |   7 |   7 |   2 |             7 |                 7 |
+| cubic spline, 8 segments     | 1 |   5 |   6 |   3 |            32 |                11 |
+| Bézier, degree 4             | 2 |  26 |  26 |   4 |            25 |                25 |
+| cubic spline, 8 × 8 segments | 2 |  19 |  21 |   6 |          1024 |               121 |
+| Bézier, degree 3             | 3 |  66 |  66 |   6 |            64 |                64 |
+
+So the work grows as `(degree + 1)^D`, and segments cost nothing per call. But a spline
+stores each piece's polynomial separately, `(segments · (degree + 1))^D` values instead
+of the `(segments + degree)^D` control values of a `BezierFn` constant. Where flash or
+RAM is tight, the `BezierFn` constant is the more compact form of a spline.
+
+The generated functions are also faster than `BezierFn::eval`, which computes the
+basis functions with the Cox–de Boor recurrence and divides: 2–19 times faster for the
+models above on an x86-64 laptop.
 
 ## Embedded / `no_std`
 
@@ -117,7 +177,7 @@ Samples are stored (`dims + 2` floats each) so the robust fit can revisit them.
 
 `cargo test`, `cargo run --release --example autofit`, `… --example demo`,
 `… --example outliers`, and `cargo run --example use_generated`, which contains
-constants pasted from the demo output.
+constants and standalone functions pasted from the demo output.
 
 ## License
 

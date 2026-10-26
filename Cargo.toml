@@ -28,3 +28,7 @@ required-features = ["std"]
 [[example]]
 name = "outliers"
 required-features = ["std"]
+
+[[test]]
+name = "standalone"
+required-features = ["std"]

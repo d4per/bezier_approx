@@ -15,6 +15,9 @@
 //!   with the number of samples.
 //! * **Inference**: [`BezierFn`]. Fixed size, no allocation, usable as a `const`.
 //!   [`Fitter::to_rust_code`] emits such a constant.
+//! * **Standalone code**: [`Fitter::to_rust_fn`] and [`Fitter::to_c_fn`] write the
+//!   fitted function as a plain Rust or C function that needs neither this crate nor
+//!   an allocator. [`Model::cost`] gives its operation count and table size.
 //! * **Splines**: a [`Model`] with `segments > 1` splits the box into equal pieces per
 //!   axis, each a Bézier polynomial, joined smoothly (a clamped uniform B-spline).
 //! * **Outliers**: [`Fitter::solve_robust`] with [`RobustLoss::HUBER`] or
@@ -68,10 +71,12 @@
 mod auto;
 mod eval;
 #[cfg(feature = "std")]
+mod export;
+#[cfg(feature = "std")]
 mod fit;
 
 #[cfg(feature = "std")]
 pub use auto::{AutoFit, AutoReport, Candidate, Caveat, Limit, RobustMode, Rule, Samples};
 pub use eval::{bernstein_into, bspline_basis, BezierFn};
 #[cfg(feature = "std")]
-pub use fit::{ErrorReport, FitError, FitReport, Fitter, Model, RobustLoss, RobustReport};
+pub use fit::{Cost, ErrorReport, FitError, FitReport, Fitter, Model, RobustLoss, RobustReport};

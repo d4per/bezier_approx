@@ -2,7 +2,7 @@
 //! B-splines of increasing size, score each by k-fold cross-validation, recommend
 //! one, and explain the choice along with anything the user should watch out for.
 
-use crate::fit::{assert_valid_box, FitError, Fitter, Model, RobustLoss};
+use crate::fit::{assert_valid_box, Cost, FitError, Fitter, Model, RobustLoss};
 use std::fmt::{self, Write};
 use std::ops::Range;
 
@@ -123,6 +123,9 @@ pub struct Candidate {
     pub coefficients: usize,
     /// Products per evaluation: `(degree + 1)^dims`.
     pub terms: usize,
+    /// Operations per call, and storage, of the standalone code from
+    /// [`Fitter::to_rust_fn`] and [`Fitter::to_c_fn`].
+    pub cost: Cost,
     /// Cross-validated RMS error, weighted by the sample weights: each sample is
     /// predicted by a model trained without it. Outliers are excluded when they are
     /// being handled, unless too few samples would be left to score any model.
@@ -363,12 +366,13 @@ impl AutoReport {
         );
         let _ = writeln!(
             s,
-            "coeffs = values to store, terms = products per evaluation.\n"
+            "coeffs = control values to store (to_rust_code), flops = multiplications + \
+             additions per call of the standalone code (to_rust_fn, to_c_fn).\n"
         );
         let _ = writeln!(
             s,
             "  {:<30} {:>6} {:>6}   {:>20}   {:>9}",
-            "model", "coeffs", "terms", "CV error (± SE)", "CV max"
+            "model", "coeffs", "flops", "CV error (± SE)", "CV max"
         );
         for (i, c) in self.candidates.iter().enumerate() {
             let mark = if i == self.chosen {
@@ -383,7 +387,7 @@ impl AutoReport {
                 "  {:<30} {:>6} {:>6}   {:>9.2e} ± {:<8.1e}   {:>9.2e}{mark}",
                 c.model.to_string(),
                 c.coefficients,
-                c.terms,
+                c.cost.flops(),
                 c.cv_rms,
                 c.cv_se,
                 c.cv_max
@@ -392,9 +396,11 @@ impl AutoReport {
         let c = self.chosen();
         let _ = writeln!(
             s,
-            "\nRecommendation: {} — {} coefficients, {} terms per evaluation.\n\
+            "\nRecommendation: {} — {} coefficients.\n\
+             As standalone code (to_rust_fn, to_c_fn): {} per call, no divisions; {} stored \
+             values.\n\
              Expected error on new inputs ≈ {:.2e} RMS; the largest cross-validated error was {:.2e}.",
-            c.model, c.coefficients, c.terms, c.cv_rms, c.cv_max
+            c.model, c.coefficients, c.cost, c.cost.values, c.cv_rms, c.cv_max
         );
         let low = &self.candidates[self.lowest];
         match &self.rule {
@@ -939,6 +945,7 @@ impl AutoFit {
             model,
             coefficients: model.coefficients(dims),
             terms: model.terms(dims),
+            cost: model.cost(dims),
             cv_rms,
             cv_se: (var / k).sqrt(),
             cv_max: max,
@@ -1040,7 +1047,7 @@ fn splitmix(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-fn unit_random(state: &mut u64) -> f64 {
+pub(crate) fn unit_random(state: &mut u64) -> f64 {
     (splitmix(state) >> 11) as f64 / (1u64 << 53) as f64
 }
 
