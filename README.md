@@ -8,6 +8,11 @@ Models are tensor-product Bézier polynomials, or chains of them joined smoothly
 (clamped uniform B-splines). A spline with one segment *is* a Bézier polynomial, so
 both share one fitting engine, one exporter and one evaluator.
 
+```toml
+[dependencies]
+bezier_approx = "0.1"
+```
+
 ## Let the crate choose the model
 
 ```rust
@@ -55,14 +60,31 @@ println!("{}", fit.to_rust_code("MY_FN")?);
 The generated constant is used like this, with no allocation and no training code:
 
 ```rust
-pub const MY_FN: bezier_approx::BezierFn<'static, 2, 4> = bezier_approx::BezierFn {
-    lo: [0.0, 0.0], hi: [1.0, 1.0], segments: 8, coeffs: &[ /* … */ ],
-};
+pub const MY_FN: bezier_approx::BezierFn<'static, 2, 4> = bezier_approx::BezierFn::new(
+    [0.0, 0.0], // lo
+    [1.0, 1.0], // hi
+    8,          // segments
+    &[ /* 121 coefficients */ ],
+);
 let y = MY_FN.eval([0.3, 0.3]);
 ```
 
+The second type parameter is degree + 1. `BezierFn::new` checks the shape when the
+constant is compiled, so a table that does not match it is a compile error.
+
 Each evaluation combines `(degree + 1)^D` coefficients, whatever the number of
 segments. Splines are cheap to evaluate, and only the stored table grows.
+
+## Embedded / `no_std`
+
+Training needs the standard library, but evaluating does not. With default features
+off, the crate is `no_std` and contains only `BezierFn` and the basis functions, and
+it needs no allocator:
+
+```toml
+[dependencies]
+bezier_approx = { version = "0.1", default-features = false }
+```
 
 ## Which model when
 
@@ -83,6 +105,8 @@ least squares:
 * **Tukey** ignores gross outliers completely; best when outliers are one-sided or large.
 * `outliers(3.0)` lists suspicious samples; `robust_weights()` gives 1 = trusted, 0 = ignored.
 * `add_weighted_sample(x, y, w)` handles measurements of known, differing precision.
+  Only the ratios of the weights matter; errors and noise estimates are reported
+  in units of y.
 * `support(x)` near 1 means the fit rests on a single sample there, so an error in
   it cannot be detected by any method.
 
@@ -94,3 +118,7 @@ Samples are stored (`dims + 2` floats each) so the robust fit can revisit them.
 `cargo test`, `cargo run --release --example autofit`, `… --example demo`,
 `… --example outliers`, and `cargo run --example use_generated`, which contains
 constants pasted from the demo output.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

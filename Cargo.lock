@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "berzier_approx"
+name = "bezier_approx"
 version = "0.1.0"

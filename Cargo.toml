@@ -1,10 +1,30 @@
 [package]
-name = "berzier_approx"
+name = "bezier_approx"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.82"
 description = "Approximate functions on a box in D dimensions with tensor-product Bézier (Bernstein) polynomials"
+license = "MIT"
+readme = "README.md"
+keywords = ["bezier", "spline", "approximation", "curve-fitting", "no-std"]
+categories = ["mathematics", "science", "embedded", "no-std::no-alloc"]
+# repository = "…"  # TODO before publishing
 
-[lib]
-name = "bezier_approx"
+[features]
+default = ["std"]
+# Training (`Fitter`, `AutoFit`). Without it, only the allocation-free evaluator is built.
+std = []
 
 [dependencies]
+
+[[example]]
+name = "demo"
+required-features = ["std"]
+
+[[example]]
+name = "autofit"
+required-features = ["std"]
+
+[[example]]
+name = "outliers"
+required-features = ["std"]

@@ -2,7 +2,7 @@
 //! B-splines of increasing size, score each by k-fold cross-validation, recommend
 //! one, and explain the choice along with anything the user should watch out for.
 
-use crate::fit::{FitError, Fitter, Model, RobustLoss};
+use crate::fit::{assert_valid_box, FitError, Fitter, Model, RobustLoss};
 use std::fmt::{self, Write};
 use std::ops::Range;
 
@@ -19,6 +19,10 @@ pub struct Samples {
 }
 
 impl Samples {
+    /// An empty sample set with `dims` input coordinates per sample.
+    ///
+    /// # Panics
+    /// If `dims == 0`.
     pub fn new(dims: usize) -> Self {
         assert!(dims > 0, "need at least one dimension");
         Samples {
@@ -60,27 +64,31 @@ impl Samples {
         Ok(())
     }
 
+    /// Number of input coordinates per sample.
     pub fn dims(&self) -> usize {
         self.dims
     }
 
+    /// Number of samples.
     pub fn len(&self) -> usize {
         self.ys.len()
     }
 
+    /// Whether there are no samples.
     pub fn is_empty(&self) -> bool {
         self.ys.is_empty()
     }
 
     /// Sample `i` as `(x, y, weight)`.
     pub fn get(&self, i: usize) -> Option<(&[f64], f64, f64)> {
-        let x = self.xs.get(i * self.dims..(i + 1) * self.dims)?;
-        Some((x, self.ys[i], self.ws[i]))
+        let y = *self.ys.get(i)?;
+        Some((&self.xs[i * self.dims..(i + 1) * self.dims], y, self.ws[i]))
     }
 }
 
 /// How [`AutoFit`] deals with outliers.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum RobustMode {
     /// Plain least squares. Outliers are detected and reported, not removed.
     Off,
@@ -93,6 +101,7 @@ pub enum RobustMode {
 
 /// What stopped a family of candidates from growing further.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Limit {
     /// [`AutoFit::max_bezier_degree`] was reached.
     MaxDegree,
@@ -106,52 +115,96 @@ pub enum Limit {
 
 /// One model that was tried, with its cross-validated error.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Candidate {
+    /// Degree and segments.
     pub model: Model,
     /// Values to store: `(degree + segments)^dims`.
     pub coefficients: usize,
     /// Products per evaluation: `(degree + 1)^dims`.
     pub terms: usize,
-    /// Cross-validated RMS error: each sample is predicted by a model trained
-    /// without it. Outliers are excluded when they are being handled.
+    /// Cross-validated RMS error, weighted by the sample weights: each sample is
+    /// predicted by a model trained without it. Outliers are excluded when they are
+    /// being handled, unless too few samples would be left to score any model.
     pub cv_rms: f64,
     /// Standard error of `cv_rms`, from its spread across folds.
     pub cv_se: f64,
-    /// Largest cross-validated error (outliers excluded when handled).
+    /// Largest cross-validated error (outliers excluded like for `cv_rms`).
     pub cv_max: f64,
 }
 
 /// How the recommended model was picked.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Rule {
     /// The smallest model whose CV error is within one standard error of the lowest
     /// CV error. Larger models only win if they are clearly better.
-    OneStandardError { threshold: f64 },
-    /// The smallest model whose CV error meets [`AutoFit::target_rms`].
+    OneStandardError {
+        /// Lowest CV error plus its standard error.
+        threshold: f64,
+    },
+    /// The smallest model whose CV error meets [`AutoFit::target_rms`] (the value).
     Target(f64),
 }
 
 /// Something about the data or the recommendation the user should know.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Caveat {
     /// Few samples per coefficient: the fit can react strongly to single points.
-    FewSamplesPerCoefficient { samples: usize, coefficients: usize },
+    FewSamplesPerCoefficient {
+        /// Samples used (outliers excluded).
+        samples: usize,
+        /// Coefficients of the recommended model.
+        coefficients: usize,
+    },
     /// The recommended model is the largest of its kind that was tried.
-    AtLimit { model: Model, limit: Limit },
-    /// Samples that disagree strongly with the model (indices into the samples).
-    Outliers { indices: Vec<usize>, handled: bool },
+    AtLimit {
+        /// The recommended model.
+        model: Model,
+        /// What prevented trying a larger one.
+        limit: Limit,
+    },
+    /// Samples that disagree strongly with the model.
+    Outliers {
+        /// Indices into the samples, in the order they were added.
+        indices: Vec<usize>,
+        /// Whether the robust fit ignored them.
+        handled: bool,
+    },
     /// Far more large errors than random noise would produce, so they were not
     /// treated as outliers. Usually the error is concentrated where the function has
-    /// a feature the models cannot follow. `worst_at` is the input with the largest error.
-    UnevenErrors { fraction: f64, worst_at: Vec<f64> },
+    /// a feature the models cannot follow.
+    UnevenErrors {
+        /// Fraction of samples with large errors.
+        fraction: f64,
+        /// The input with the largest error.
+        worst_at: Vec<f64>,
+    },
     /// A region where the prediction rests on less than one sample's worth of data.
-    SparseRegion { support: f64, at: Vec<f64> },
+    SparseRegion {
+        /// [`Fitter::support`] at `at`.
+        support: f64,
+        /// The input with the least support.
+        at: Vec<f64>,
+    },
     /// The cross-validated error varies a lot between folds.
-    UnstableEstimate { relative: f64 },
+    UnstableEstimate {
+        /// Standard error of the CV error relative to the CV error.
+        relative: f64,
+    },
     /// No candidate met the requested target.
-    TargetNotMet { target: f64, best: f64 },
+    TargetNotMet {
+        /// The requested [`AutoFit::target_rms`].
+        target: f64,
+        /// The lowest CV error of any candidate.
+        best: f64,
+    },
     /// Tensor-product models get large quickly in many dimensions.
-    HighDimensional { dims: usize },
+    HighDimensional {
+        /// Number of input dimensions.
+        dims: usize,
+    },
 }
 
 impl fmt::Display for Caveat {
@@ -252,6 +305,7 @@ impl fmt::Display for Caveat {
 
 /// The outcome of [`AutoFit::run`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AutoReport {
     /// Every model that was tried, in the order tried.
     pub candidates: Vec<Candidate>,
@@ -259,18 +313,25 @@ pub struct AutoReport {
     pub chosen: usize,
     /// Index of the candidate with the lowest cross-validated error.
     pub lowest: usize,
+    /// How the recommendation was made.
     pub rule: Rule,
-    /// The robust loss used, if outliers were handled.
+    /// The robust loss used, if outliers were handled. They are then also excluded
+    /// from the cross-validation scores, unless too few samples would be left to
+    /// score any model; [`summary`](AutoReport::summary) says which.
     pub robust: Option<RobustLoss>,
+    /// Things to watch out for, most important first.
     pub caveats: Vec<Caveat>,
     /// The recommended model, fitted to all samples. Export it with
     /// [`Fitter::to_rust_code`].
     pub fitter: Fitter,
     samples: usize,
     folds: usize,
+    /// Whether outliers were excluded from the cross-validation scores.
+    robust_scoring: bool,
 }
 
 impl AutoReport {
+    /// The recommended candidate, `&candidates[chosen]`.
     pub fn chosen(&self) -> &Candidate {
         &self.candidates[self.chosen]
     }
@@ -279,9 +340,18 @@ impl AutoReport {
     pub fn summary(&self) -> String {
         let mut s = String::new();
         let how = match self.robust {
-            None => "least squares",
-            Some(RobustLoss::Huber { .. }) => "robust Huber fit, outliers excluded from scoring",
-            Some(RobustLoss::Tukey { .. }) => "robust Tukey fit, outliers excluded from scoring",
+            None => "least squares".to_string(),
+            Some(loss) => {
+                let name = match loss {
+                    RobustLoss::Huber { .. } => "Huber",
+                    RobustLoss::Tukey { .. } => "Tukey",
+                };
+                if self.robust_scoring {
+                    format!("robust {name} fit, outliers excluded from scoring")
+                } else {
+                    format!("robust {name} fit; too few samples to exclude outliers from scoring")
+                }
+            }
         };
         let _ = writeln!(
             s,
@@ -415,14 +485,12 @@ pub struct AutoFit {
 
 impl AutoFit {
     /// Model selection on the box `[lo, hi]`.
+    ///
+    /// # Panics
+    /// If `lo` and `hi` differ in length, are empty, or `lo[d] >= hi[d]` or the width
+    /// `hi[d] - lo[d]` is not finite on some axis.
     pub fn new(lo: &[f64], hi: &[f64]) -> Self {
-        assert!(!lo.is_empty() && lo.len() == hi.len(), "bad box");
-        for (d, (&a, &b)) in lo.iter().zip(hi).enumerate() {
-            assert!(
-                a.is_finite() && b.is_finite() && a < b,
-                "axis {d}: need lo < hi"
-            );
-        }
+        assert_valid_box(lo, hi);
         AutoFit {
             lo: lo.to_vec(),
             hi: hi.to_vec(),
@@ -439,6 +507,9 @@ impl AutoFit {
     }
 
     /// Model selection on the unit box `[0, 1]^dims`.
+    ///
+    /// # Panics
+    /// If `dims == 0`.
     pub fn unit(dims: usize) -> Self {
         Self::new(&vec![0.0; dims], &vec![1.0; dims])
     }
@@ -456,7 +527,8 @@ impl AutoFit {
         self
     }
 
-    /// Most segments per axis to try for splines (default 32).
+    /// Most segments per axis to try for splines (default 32). Segment counts are
+    /// tried along a ladder (2, 3, 4, 5, 6, 8, 10, 12, 16, …) that ends at this value.
     pub fn max_segments(mut self, segments: usize) -> Self {
         self.max_segments = segments;
         self
@@ -470,6 +542,9 @@ impl AutoFit {
     }
 
     /// Number of cross-validation folds (default 5, at most the number of samples).
+    ///
+    /// # Panics
+    /// If `folds < 2`.
     pub fn folds(mut self, folds: usize) -> Self {
         assert!(folds >= 2, "need at least 2 folds");
         self.folds = folds;
@@ -477,7 +552,14 @@ impl AutoFit {
     }
 
     /// Smoothness penalty passed to every fit (see [`Fitter::with_smoothing`]).
+    ///
+    /// # Panics
+    /// If `smoothing` is negative or not finite.
     pub fn smoothing(mut self, smoothing: f64) -> Self {
+        assert!(
+            smoothing >= 0.0 && smoothing.is_finite(),
+            "smoothing must be finite and non-negative"
+        );
         self.smoothing = smoothing;
         self
     }
@@ -491,7 +573,11 @@ impl AutoFit {
     /// Recommend the smallest model whose cross-validated RMS error is at most
     /// `target`, instead of using the one-standard-error rule. Useful for exact data
     /// (computed from a formula) and for memory-constrained targets.
+    ///
+    /// # Panics
+    /// If `target` is negative or NaN.
     pub fn target_rms(mut self, target: f64) -> Self {
+        assert!(target >= 0.0, "target must be non-negative");
         self.target_rms = Some(target);
         self
     }
@@ -504,6 +590,10 @@ impl AutoFit {
     }
 
     /// Runs the selection, fits the recommended model to all samples and checks it.
+    ///
+    /// Fails with [`FitError::NoData`] if `data` is empty, and with
+    /// [`FitError::NoCandidates`] if no model fits the limits and the data (every model
+    /// needs at least 2 training samples per coefficient).
     #[allow(clippy::needless_range_loop)]
     pub fn run(&self, data: &Samples) -> Result<AutoReport, FitError> {
         let dims = self.lo.len();
@@ -514,8 +604,11 @@ impl AutoFit {
             });
         }
         let m = data.len();
+        if m == 0 {
+            return Err(FitError::NoData);
+        }
         if m < 2 {
-            return Err(FitError::TooFewSamples);
+            return Err(FitError::NoCandidates);
         }
         for i in 0..m {
             let (x, _, _) = data.get(i).expect("index in range");
@@ -568,13 +661,23 @@ impl AutoFit {
             false
         };
         let mut robust = None;
+        let mut robust_scoring = false;
         if use_robust {
             // 3. Select again with the robust weights: outliers drop out of both
             //    training and scoring, and doubtful samples count for less.
             for (w, r) in weights.iter_mut().zip(&rw) {
                 *w *= r;
             }
-            sel = self.select(data, &weights, &fold_of, folds, tol)?;
+            match self.select(data, &weights, &fold_of, folds, tol) {
+                Ok(s) => {
+                    sel = s;
+                    robust_scoring = true;
+                }
+                // Without the outliers no model has enough samples left to be scored:
+                // keep the selection above, but still fit the chosen model robustly.
+                Err(FitError::NoCandidates) => {}
+                Err(e) => return Err(e),
+            }
             robust = Some(loss);
         }
 
@@ -667,6 +770,7 @@ impl AutoFit {
             fitter,
             samples: m,
             folds,
+            robust_scoring,
         })
     }
 
@@ -698,10 +802,8 @@ impl AutoFit {
             Limit::MaxDegree,
         )];
         for &p in &self.spline_degrees {
-            let ladder = SEGMENT_LADDER
-                .iter()
-                .copied()
-                .filter(|&k| k <= self.max_segments)
+            let ladder = segment_ladder(self.max_segments)
+                .into_iter()
                 .map(|k| Model::spline(p, k))
                 .collect();
             families_models.push((ladder, Limit::MaxSegments));
@@ -743,7 +845,7 @@ impl AutoFit {
             });
         }
         if candidates.is_empty() {
-            return Err(FitError::TooFewSamples);
+            return Err(FitError::NoCandidates);
         }
 
         let lowest = (0..candidates.len())
@@ -800,29 +902,31 @@ impl AutoFit {
         fold_of: &[usize],
         folds: usize,
     ) -> Result<Candidate, FitError> {
+        // Weighted RMS, sqrt(Σ w e² / Σ w), so it is in units of y whatever the
+        // scale of the weights.
         let mut sq = 0.0;
-        let mut count = 0usize;
+        let mut wsum = 0.0;
         let mut max = 0.0f64;
         let mut fold_rms = Vec::with_capacity(folds);
         for f in 0..folds {
             let mut fit = self.new_fitter(model).without_sample_storage();
             feed(&mut fit, data, weights, |i| fold_of[i] != f)?;
             fit.solve()?;
-            let (mut fsq, mut fcount) = (0.0, 0usize);
+            let (mut fsq, mut fw) = (0.0, 0.0);
             for i in (0..data.len()).filter(|&i| fold_of[i] == f && weights[i] > 0.0) {
                 let (x, y, _) = data.get(i).expect("index in range");
                 let e = fit.predict(x)? - y;
                 fsq += weights[i] * e * e;
-                fcount += 1;
+                fw += weights[i];
                 max = max.max(e.abs());
             }
-            if fcount > 0 {
-                fold_rms.push((fsq / fcount as f64).sqrt());
+            if fw > 0.0 {
+                fold_rms.push((fsq / fw).sqrt());
                 sq += fsq;
-                count += fcount;
+                wsum += fw;
             }
         }
-        let cv_rms = (sq / count.max(1) as f64).sqrt();
+        let cv_rms = if wsum > 0.0 { (sq / wsum).sqrt() } else { 0.0 };
         let k = fold_rms.len() as f64;
         let mean = fold_rms.iter().sum::<f64>() / k;
         let var = fold_rms
@@ -912,6 +1016,20 @@ fn feed(
         }
     }
     Ok(())
+}
+
+/// Segment counts to try, smallest first: [`SEGMENT_LADDER`] up to `max`, ending at
+/// `max` itself so that hitting the end really means `max_segments` was reached.
+fn segment_ladder(max: usize) -> Vec<usize> {
+    let mut ladder: Vec<usize> = SEGMENT_LADDER
+        .iter()
+        .copied()
+        .filter(|&k| k <= max)
+        .collect();
+    if max >= 2 && ladder.last() != Some(&max) {
+        ladder.push(max);
+    }
+    ladder
 }
 
 fn splitmix(state: &mut u64) -> u64 {
@@ -1060,5 +1178,86 @@ mod tests {
             .iter()
             .any(|c| c.cv_rms <= 1e-3 && c.coefficients < r.chosen().coefficients);
         assert!(!smaller_ok, "{}", r.summary());
+    }
+
+    #[test]
+    fn scaling_all_weights_changes_nothing() {
+        let f = |x: f64| (3.0 * x).sin();
+        let (mut a, mut b) = (Samples::new(1), Samples::new(1));
+        let mut st = 5;
+        for _ in 0..200 {
+            let x = unit_random(&mut st);
+            let y = f(x) + 0.01 * noise(&mut st);
+            a.push([x], y).unwrap();
+            b.push_weighted([x], y, 100.0).unwrap();
+        }
+        let ra = AutoFit::unit(1).target_rms(5e-3).run(&a).unwrap();
+        let rb = AutoFit::unit(1).target_rms(5e-3).run(&b).unwrap();
+        assert_eq!(ra.chosen, rb.chosen);
+        assert_eq!(ra.rule, rb.rule);
+        assert_eq!(ra.candidates.len(), rb.candidates.len());
+        for (ca, cb) in ra.candidates.iter().zip(&rb.candidates) {
+            let rel = (ca.cv_rms - cb.cv_rms).abs() / ca.cv_rms;
+            assert!(rel < 1e-9, "{}: {} vs {}", ca.model, ca.cv_rms, cb.cv_rms);
+        }
+    }
+
+    #[test]
+    fn outlier_in_tiny_data_is_still_handled() {
+        // Without the outlier, too few samples remain to score any model, so the
+        // first selection is kept and only the final fit is robust.
+        let mut data = Samples::new(1);
+        for (i, x) in [0.1, 0.3, 0.5, 0.7, 0.9].into_iter().enumerate() {
+            data.push([x], 2.0 * x + if i == 2 { 5.0 } else { 0.0 })
+                .unwrap();
+        }
+        let r = AutoFit::unit(1).run(&data).unwrap();
+        let s = r.summary();
+        assert_eq!(r.chosen().model, Model::bezier(1), "{s}");
+        assert!(r.robust.is_some(), "{s}");
+        assert!(s.contains("too few samples to exclude outliers"), "{s}");
+        let outliers = Caveat::Outliers {
+            indices: vec![2],
+            handled: true,
+        };
+        assert!(r.caveats.contains(&outliers), "{s}");
+        assert!((r.fitter.predict([0.5]).unwrap() - 1.0).abs() < 1e-6, "{s}");
+    }
+
+    #[test]
+    fn no_model_to_try_is_reported_as_such() {
+        let mut data = Samples::new(1);
+        assert_eq!(AutoFit::unit(1).run(&data).err(), Some(FitError::NoData));
+        data.push([0.5], 1.0).unwrap();
+        assert_eq!(
+            AutoFit::unit(1).run(&data).err(),
+            Some(FitError::NoCandidates)
+        );
+        for i in 0..50 {
+            let x = i as f64 / 49.0;
+            data.push([x], x.sin()).unwrap();
+        }
+        let nothing = AutoFit::unit(1).max_bezier_degree(0).spline_degrees(&[]);
+        assert_eq!(nothing.run(&data).err(), Some(FitError::NoCandidates));
+        let too_small = AutoFit::unit(1).max_coefficients(1);
+        assert_eq!(too_small.run(&data).err(), Some(FitError::NoCandidates));
+    }
+
+    #[test]
+    fn sample_index_out_of_range_is_none() {
+        let mut data = Samples::new(2);
+        data.push([0.25, 0.5], 1.0).unwrap();
+        assert_eq!(data.get(0), Some((&[0.25, 0.5][..], 1.0, 1.0)));
+        assert_eq!(data.get(1), None);
+        assert_eq!(data.get(usize::MAX), None);
+    }
+
+    #[test]
+    fn segment_ladder_ends_at_max_segments() {
+        assert_eq!(segment_ladder(1), Vec::<usize>::new());
+        assert_eq!(segment_ladder(4), [2, 3, 4]);
+        assert_eq!(*segment_ladder(32).last().unwrap(), 32);
+        assert_eq!(*segment_ladder(40).last().unwrap(), 40);
+        assert_eq!(segment_ladder(100)[12..], [48, 64, 100]);
     }
 }
