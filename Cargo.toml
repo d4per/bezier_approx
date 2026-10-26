@@ -1,0 +1,10 @@
+[package]
+name = "berzier_approx"
+version = "0.1.0"
+edition = "2021"
+description = "Approximate functions on a box in D dimensions with tensor-product Bézier (Bernstein) polynomials"
+
+[lib]
+name = "bezier_approx"
+
+[dependencies]
